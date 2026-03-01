@@ -191,11 +191,75 @@ async function updateCache() {
     console.error('Error scanning services:', err);
   }
 }
+/**
+ * Generates the main dashboard HTML.
+ * @returns {string} The HTML document.
+ */
+function generateHTML() {
+  const hostname = os.hostname();
+  const localIP = getLocalIP();
+  return `<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>LocalHarbor - ${hostname}</title>
+    <style>
+        body { background: #0a0a0f; color: #e0e0e0; font-family: system-ui, -apple-system, sans-serif; margin: 0; padding: 2rem; line-height: 1.5; }
+        header { margin-bottom: 2rem; border-bottom: 1px solid #1f1f2e; padding-bottom: 1rem; }
+        h1 { margin: 0; color: #fff; font-size: 1.5rem; }
+        .addr { color: #888; font-family: monospace; font-size: 0.9rem; }
+        #grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); gap: 1rem; }
+        .card { background: #16161a; border: 1px solid #2a2a35; padding: 1.25rem; border-radius: 8px; text-decoration: none; color: inherit; transition: transform 0.15s, border-color 0.15s; display: flex; flex-direction: column; }
+        .card:hover { transform: translateY(-3px); border-color: #444; background: #1c1c21; }
+        .card h3 { margin: 0 0 0.5rem 0; color: #fff; font-size: 1.1rem; }
+        .card p { margin: 0; font-size: 0.85rem; color: #a0a0a0; flex-grow: 1; }
+        .card .url { font-family: monospace; color: #58a6ff; margin-top: 0.75rem; font-size: 0.8rem; }
+        .tag { display: inline-block; padding: 2px 8px; border-radius: 4px; font-size: 0.7rem; font-weight: bold; margin-top: 0.75rem; align-self: flex-start; text-transform: uppercase; background: #2a2a35; }
+    </style>
+</head>
+<body>
+    <header>
+        <h1>LocalHarbor</h1>
+        <div class="addr">${hostname} • ${localIP}:${PORT}</div>
+    </header>
+    <div id="grid"></div>
+    <script>
+        async function fetchServices() {
+            try {
+                const res = await fetch('/api/services');
+                const services = await res.json();
+                const grid = document.getElementById('grid');
+                if (services.length === 0) {
+                    grid.innerHTML = '<p style="color: #666">Scanning for local web services...</p>';
+                    return;
+                }
+                grid.innerHTML = services.map(s => {
+                    const url = \`http://\${location.hostname}:\${s.port}\`;
+                    return \`
+                        <a href="\${url}" target="_blank" class="card">
+                            <h3>\${s.name}</h3>
+                            <p>\${s.description || 'No description found'}</p>
+                            <span class="url">\${url}</span>
+                            <span class="tag" style="color: \${s.color}">\${s.stack}</span>
+                        </a>
+                    \`;
+                }).join('');
+            } catch (e) {
+                console.error('Refresh failed', e);
+            }
+        }
+        fetchServices();
+        setInterval(fetchServices, 5000);
+    </script>
+</body>
+</html>`;
+}
 
 const server = http.createServer((req, res) => {
   if (req.method === 'GET' && req.url === '/') {
     res.writeHead(200, { 'Content-Type': 'text/html' });
-    res.end('<h1>LocalHarbor</h1><p>Scanning for local services...</p>');
+    res.end(generateHTML());
   } else if (req.method === 'GET' && req.url === '/api/services') {
     res.writeHead(200, { 'Content-Type': 'application/json' });
     res.end(JSON.stringify(cachedServices));
