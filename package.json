@@ -1,0 +1,16 @@
+{
+  "name": "localharbor",
+  "version": "1.0.0",
+  "description": "Zero-dependency local network dashboard to see all your dev services in one place.",
+  "main": "index.js",
+  "bin": {
+    "localharbor": "index.js"
+  },
+  "scripts": {
+    "start": "node index.js"
+  },
+  "engines": {
+    "node": ">=14.0.0"
+  },
+  "license": "MIT"
+}
