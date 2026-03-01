@@ -1,54 +1,64 @@
-const http = require('http');
-const assert = require('assert');
+const assert = require('node:assert');
+const http = require('node:http');
+const LocalHarbor = require('../index.js');
 
 /**
- * Validates the web server interface and API schema.
+ * TEST 4: API Response Structure
+ * Verifies the /api/services route returns valid JSON and correct schema.
  */
-
-const TEST_PORT = 3001;
-
-async function testApiSchema() {
-  console.log('Running Test: API Schema and UI Server...');
+try {
+  console.log('Running Test 4: API structure...');
   
-  const harbor = require('child_process').spawn('node', ['index.js', TEST_PORT]);
+  // Start server on ephemeral port
+  process.env.PORT = '0';
+  const server = LocalHarbor.server;
   
-  return new Promise((resolve, reject) => {
-    setTimeout(async () => {
-      try {
-        // Test 1: HTML Content
-        const htmlRes = await fetch(`http://localhost:${TEST_PORT}/`);
-        const html = await htmlRes.text();
-        assert.strictEqual(htmlRes.status, 200);
-        assert.ok(html.includes('<script>'), 'UI must contain service polling script');
-        assert.ok(html.includes('/api/services'), 'UI must fetch from the correct API endpoint');
+  // We need to wait for the server to actually start listening
+  if (!server.listening) {
+    server.listen(0, '127.0.0.1');
+  }
 
-        // Test 2: JSON Schema
-        const apiRes = await fetch(`http://localhost:${TEST_PORT}/api/services`);
-        const services = await apiRes.json();
-        assert.ok(Array.isArray(services), 'API must return an array');
+  // Use a timeout to wait for server address to be available
+  setTimeout(() => {
+    const port = server.address().port;
+    http.get(`http://127.0.0.1:${port}/api/services`, (res) => {
+      assert.strictEqual(res.statusCode, 200);
+      assert.strictEqual(res.headers['content-type'], 'application/json');
+      
+      let body = '';
+      res.on('data', chunk => body += chunk);
+      res.on('end', () => {
+        const data = JSON.parse(body);
+        assert.ok(Array.isArray(data.services), 'Response should have a services array');
+        assert.ok(typeof data.lastUpdated === 'number', 'Response should have a lastUpdated timestamp');
         
-        if (services.length > 0) {
-          const s = services[0];
-          const keys = Object.keys(s);
-          assert.ok(keys.includes('port'), 'Service missing port');
-          assert.ok(keys.includes('name'), 'Service missing name');
-          assert.ok(keys.includes('description'), 'Service missing description');
-          assert.ok(keys.includes('color'), 'Service missing color accent');
-          assert.ok(keys.includes('pid'), 'Service missing PID');
-        }
+        server.close();
+        console.log('✅ Test 4 Passed');
+      });
+    }).on('error', (err) => {
+      console.error('❌ Test 4 Failed (Request Error):', err.message);
+      process.exit(1);
+    });
+  }, 100);
 
-        console.log('  - API/UI endpoints responding as expected');
-        harbor.kill();
-        resolve();
-      } catch (e) {
-        harbor.kill();
-        reject(e);
-      }
-    }, 2000);
-  });
+} catch (e) {
+  console.error('❌ Test 4 Failed:', e.message);
+  process.exit(1);
 }
 
-testApiSchema().catch(err => {
-  console.error(err);
+/**
+ * TEST 5: Network IP Utility
+ * Verifies getLocalIP returns a valid non-internal IPv4.
+ */
+try {
+  console.log('Running Test 5: getLocalIP...');
+  const ip = LocalHarbor.getLocalIP();
+  const ipv4Regex = /^(?:[0-9]{1,3}\.){3}[0-9]{1,3}$/;
+  
+  assert.ok(ipv4Regex.test(ip), `Result "${ip}" should be a valid IPv4 address`);
+  assert.notStrictEqual(ip, '127.0.0.1', 'Should return external/local IP, not just loopback');
+  console.log('✅ Test 5 Passed');
+} catch (e) {
+  console.error('❌ Test 5 Failed:', e.message);
   process.exit(1);
-});
+}

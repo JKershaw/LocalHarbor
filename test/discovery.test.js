@@ -1,134 +1,79 @@
-const http = require('http');
-const assert = require('assert');
-const { spawnSync, execSync } = require('child_process');
-const fs = require('fs');
-const path = require('path');
-const os = require('os');
+const assert = require('node:assert');
+const fs = require('node:fs');
+const path = require('node:path');
+const os = require('node:os');
+
+// We import the functions to test. index.js must export these.
+const LocalHarbor = require('../index.js');
 
 /**
- * These tests validate the core logic requirements of LocalHarbor:
- * 1. Port Discovery and Filtering (lsof parsing)
- * 2. Metadata Extraction (README, package.json, etc.)
- * 3. Network IP Detection
- * 4. API Response Format
+ * TEST 1: lsof Output Parsing
+ * Verifies that the raw string output from lsof is correctly transformed into structured data.
  */
+try {
+  console.log('Running Test 1: lsof parsing...');
+  const mockLsofOutput = `
+COMMAND   PID USER   FD   TYPE             DEVICE SIZE/OFF NODE NAME
+node     1234 user   12u  IPv6 0xdeadbeef      0t0  TCP *:3000 (LISTEN)
+node     1234 user   13u  IPv4 0xdeadbeef      0t0  TCP *:3000 (LISTEN)
+python   5678 user    5u  IPv4 0xdeadbeef      0t0  TCP *:8000 (LISTEN)
+postgres  111 user    3u  IPv4 0xdeadbeef      0t0  TCP *:5432 (LISTEN)
+  `.trim();
 
-async function testDiscovery() {
-  console.log('Running Test: Port Discovery & Filtering...');
+  // Expected logic: Filter out noise (postgres), deduplicate IPv4/v6 for same port
+  const results = LocalHarbor.parseLsof(mockLsofOutput);
   
-  // Create a dummy server to detect
-  const dummyPort = 8081;
-  const dummyServer = http.createServer((req, res) => res.end()).listen(dummyPort);
+  assert.strictEqual(results.length, 2, 'Should find 2 dev services, excluding postgres');
+  assert.ok(results.some(s => s.port === 3000 && s.pid === 1234), 'Should contain port 3000');
+  assert.ok(results.some(s => s.port === 8000 && s.pid === 5678), 'Should contain port 8000');
+  console.log('✅ Test 1 Passed');
+} catch (e) {
+  console.error('❌ Test 1 Failed:', e.message);
+  process.exit(1);
+}
+
+/**
+ * TEST 2: Metadata Enrichment (Filesystem)
+ * Verifies that the app correctly reads project names from READMEs or config files.
+ */
+try {
+  console.log('Running Test 2: Metadata enrichment...');
+  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'lh-test-'));
   
-  // We'll execute the script in a way that we can inspect its internal API
-  // For the purpose of this test, we verify the dashboard starts and excludes itself
-  const dashboardPort = 2999;
-  const harbor = require('child_process').spawn('node', ['index.js', dashboardPort]);
+  // Create a mock project structure
+  fs.writeFileSync(path.join(tempDir, 'README.md'), '# Project Alpha\n\nThis is a test project description.');
+  fs.writeFileSync(path.join(tempDir, 'package.json'), JSON.stringify({ name: 'ignored-name', dependencies: { 'next': '14.0.0' } }));
+
+  // Logic: README header usually takes priority over package.json name if present
+  const metadata = LocalHarbor.enrichFromCwd(tempDir, 3000, 'node');
   
-  return new Promise((resolve, reject) => {
-    let output = '';
-    harbor.stdout.on('data', (d) => {
-      output += d.toString();
-      if (output.includes(`http://`)) {
-        // Dashboard is up
-        fetch(`http://localhost:${dashboardPort}/api/services`)
-          .then(res => res.json())
-          .then(services => {
-            const hasDummy = services.some(s => s.port === dummyPort);
-            const hasItself = services.some(s => s.port === dashboardPort);
-            const hasLowPort = services.some(s => s.port < 1024);
-            const hasDBPort = services.some(s => [5432, 3306, 6379].includes(s.port));
-
-            assert.strictEqual(hasItself, false, 'Should exclude its own port');
-            assert.strictEqual(hasLowPort, false, 'Should exclude system ports < 1024');
-            assert.strictEqual(hasDBPort, false, 'Should exclude common database ports');
-            
-            // Note: hasDummy might be false in CI environments where lsof permissions are restricted,
-            // but in a local dev environment it should be true.
-            console.log(`  - Found dummy port ${dummyPort}: ${hasDummy}`);
-            
-            harbor.kill();
-            dummyServer.close();
-            resolve();
-          })
-          .catch(reject);
-      }
-    });
-
-    setTimeout(() => {
-      harbor.kill();
-      dummyServer.close();
-      reject(new Error('Dashboard failed to start or respond'));
-    }, 10000);
-  });
+  assert.strictEqual(metadata.name, 'Project Alpha');
+  assert.strictEqual(metadata.description, 'This is a test project description.');
+  assert.strictEqual(metadata.stack, 'next');
+  
+  fs.rmSync(tempDir, { recursive: true, force: true });
+  console.log('✅ Test 2 Passed');
+} catch (e) {
+  console.error('❌ Test 2 Failed:', e.message);
+  process.exit(1);
 }
 
-async function testMetadataExtraction() {
-  console.log('Running Test: Metadata Extraction Logic...');
-  const tmpDir = path.join(os.tmpdir(), `harbor-test-${Date.now()}`);
-  fs.mkdirSync(tmpDir, { recursive: true });
-
-  try {
-    // 1. Test README parsing
-    const readmePath = path.join(tmpDir, 'README.md');
-    fs.writeFileSync(readmePath, '# My Awesome Project\n\nThis is a description of the project.');
-    
-    // We mock the extraction logic here as per the implementation plan requirements
-    // (In a real scenario, this would be tested by pointing the scanner at this PID/CWD)
-    
-    // 2. Test package.json parsing
-    const pkgPath = path.join(tmpDir, 'package.json');
-    fs.writeFileSync(pkgPath, JSON.stringify({
-      name: 'pkg-name',
-      description: 'pkg-desc',
-      dependencies: { 'next': 'latest' }
-    }));
-
-    // Verification of extraction regex/logic
-    const readmeContent = fs.readFileSync(readmePath, 'utf8');
-    const nameMatch = readmeContent.match(/^#\s+(.+)$/m);
-    const descMatch = readmeContent.split('\n').find(l => l.trim() && !l.startsWith('#'));
-
-    assert.strictEqual(nameMatch[1], 'My Awesome Project', 'README name extraction failed');
-    assert.strictEqual(descMatch, 'This is a description of the project.', 'README description extraction failed');
-
-    const pkg = JSON.parse(fs.readFileSync(pkgPath, 'utf8'));
-    assert.strictEqual(pkg.name, 'pkg-name', 'package.json name extraction failed');
-    assert.ok(pkg.dependencies.next, 'Framework detection failed');
-
-  } finally {
-    fs.rmSync(tmpDir, { recursive: true, force: true });
-  }
-  console.log('  - Metadata logic verified via file simulation');
+/**
+ * TEST 3: Fallback Naming
+ * Verifies that if no files are found, it falls back to directory name or command.
+ */
+try {
+  console.log('Running Test 3: Fallback naming...');
+  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'my-cool-app'));
+  
+  const metadata = LocalHarbor.enrichFromCwd(tempDir, 5173, 'node');
+  
+  // Should title-case the directory name
+  assert.strictEqual(metadata.name, 'My Cool App');
+  
+  fs.rmSync(tempDir, { recursive: true, force: true });
+  console.log('✅ Test 3 Passed');
+} catch (e) {
+  console.error('❌ Test 3 Failed:', e.message);
+  process.exit(1);
 }
-
-async function testNetworkIP() {
-  console.log('Running Test: Local IP Detection...');
-  const nets = os.networkInterfaces();
-  let found = false;
-  for (const name of Object.keys(nets)) {
-    for (const net of nets[name]) {
-      if (net.family === 'IPv4' && !net.internal) {
-        found = true;
-        console.log(`  - Found external IP: ${net.address}`);
-        break;
-      }
-    }
-  }
-  assert.ok(found, 'Should find at least one non-internal IPv4 address');
-}
-
-async function runAll() {
-  try {
-    await testNetworkIP();
-    await testMetadataExtraction();
-    await testDiscovery();
-    console.log('\n✅ All core logic tests passed.');
-  } catch (err) {
-    console.error('\n❌ Test failed:');
-    console.error(err);
-    process.exit(1);
-  }
-}
-
-runAll();
