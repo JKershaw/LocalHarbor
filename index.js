@@ -62,6 +62,78 @@ function detectStack(cwd, port) {
   return { stack: 'Unknown', color: 'hsl(' + ((port * 137) % 360) + ', 70%, 60%)' };
 }
 
+function getProjectMeta(cwd, port) {
+  if (!cwd) return { name: 'Port ' + port, description: '' };
+  try {
+    const readmePath = path.join(cwd, 'README.md');
+    if (fs.existsSync(readmePath)) {
+      const content = fs.readFileSync(readmePath, 'utf8');
+      const headingMatch = content.match(/^#\s+(.+)/m);
+      if (headingMatch) {
+        const lines = content.split('\n');
+        let desc = '';
+        for (const line of lines) {
+          const trimmed = line.trim();
+          if (trimmed && !trimmed.startsWith('#')) { desc = trimmed; break; }
+        }
+        return { name: headingMatch[1].trim(), description: desc };
+      }
+    }
+  } catch (e) {}
+  try {
+    const pkgPath = path.join(cwd, 'package.json');
+    if (fs.existsSync(pkgPath)) {
+      const pkg = JSON.parse(fs.readFileSync(pkgPath, 'utf8'));
+      if (pkg.name) return { name: pkg.name, description: pkg.description || '' };
+    }
+  } catch (e) {}
+  try {
+    const pyPath = path.join(cwd, 'pyproject.toml');
+    if (fs.existsSync(pyPath)) {
+      const content = fs.readFileSync(pyPath, 'utf8');
+      const nm = content.match(/^name\s*=\s*"(.+?)"/m);
+      const ds = content.match(/^description\s*=\s*"(.+?)"/m);
+      if (nm) return { name: nm[1], description: ds ? ds[1] : '' };
+    }
+  } catch (e) {}
+  try {
+    const cargoPath = path.join(cwd, 'Cargo.toml');
+    if (fs.existsSync(cargoPath)) {
+      const content = fs.readFileSync(cargoPath, 'utf8');
+      const nm = content.match(/^name\s*=\s*"(.+?)"/m);
+      const ds = content.match(/^description\s*=\s*"(.+?)"/m);
+      if (nm) return { name: nm[1], description: ds ? ds[1] : '' };
+    }
+  } catch (e) {}
+  try {
+    const goPath = path.join(cwd, 'go.mod');
+    if (fs.existsSync(goPath)) {
+      const content = fs.readFileSync(goPath, 'utf8');
+      const m = content.match(/^module\s+(.+)/m);
+      if (m) {
+        const parts = m[1].trim().split('/');
+        return { name: parts[parts.length - 1], description: '' };
+      }
+    }
+  } catch (e) {}
+  try {
+    const gitConfig = path.join(cwd, '.git', 'config');
+    if (fs.existsSync(gitConfig)) {
+      const content = fs.readFileSync(gitConfig, 'utf8');
+      const m = content.match(/url\s*=\s*(.+)/m);
+      if (m) {
+        const parts = m[1].trim().split('/');
+        const repoName = parts[parts.length - 1].replace(/\.git$/, '');
+        return { name: repoName, description: '' };
+      }
+    }
+  } catch (e) {}
+  const dirName = path.basename(cwd);
+  const titleCased = dirName.replace(/[-_]/g, ' ').split(' ').map(w => w.charAt(0).toUpperCase() + w.slice(1)).join(' ');
+  if (titleCased) return { name: titleCased, description: '' };
+  return { name: 'Port ' + port, description: '' };
+}
+
 /**
  * Scans for listening TCP services using lsof.
  * @returns {Promise<Array>}
@@ -98,7 +170,12 @@ async function scanServices() {
         services.push({ port, pid, processName });
       }
     }
-    return services;
+    return services.map(s => {
+      const cwd = getCwd(s.pid);
+      const si = detectStack(cwd, s.port);
+      const meta = getProjectMeta(cwd, s.port);
+      return { port: s.port, pid: s.pid, processName: s.processName, cwd, name: meta.name, description: meta.description, stack: si.stack, color: si.color };
+    });
   } catch (err) {
     return [];
   }
