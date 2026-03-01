@@ -1,6 +1,7 @@
 const http = require('http');
 const os = require('os');
 const path = require('path');
+const { execSync } = require('child_process');
 
 const PORT = process.env.PORT || process.argv[2] || 2999;
 let cachedServices = [];
@@ -23,11 +24,45 @@ function getLocalIP() {
 }
 
 /**
- * Stub function to scan for services.
+ * Scans for listening TCP services using lsof.
  * @returns {Promise<Array>}
  */
 async function scanServices() {
-  return [];
+  const knownNonWebPorts = [5432, 3306, 6379, 53, 27017, 11211, 9200, 2181, 4369, 25, 587, 143, 993, 110, 995];
+  try {
+    const output = execSync('lsof -i -n -P -sTCP:LISTEN', { encoding: 'utf8' });
+    const lines = output.trim().split('\n');
+    const services = [];
+    const seenPorts = new Set();
+
+    // Skip header line
+    for (let i = 1; i < lines.length; i++) {
+      const parts = lines[i].split(/\s+/);
+      if (parts.length < 9) continue;
+
+      const processName = parts[0];
+      const pid = parseInt(parts[1], 10);
+      const name = parts[8];
+      const portStr = name.split(':').pop();
+      const port = parseInt(portStr, 10);
+
+      if (isNaN(port) || isNaN(pid)) continue;
+
+      // Filter: below 1024, own port, and known non-web ports
+      if (port < 1024 || port === Number(PORT) || knownNonWebPorts.includes(port)) {
+        continue;
+      }
+
+      // Deduplicate by port
+      if (!seenPorts.has(port)) {
+        seenPorts.add(port);
+        services.push({ port, pid, processName });
+      }
+    }
+    return services;
+  } catch (err) {
+    return [];
+  }
 }
 
 /**
