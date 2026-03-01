@@ -22,24 +22,41 @@ function getLocalIP() {
 }
 
 function parseLsof(stdout) {
-  const lines = stdout.split('\n').slice(1);
+  const lines = stdout.trim().split('\n');
+  if (lines.length < 2) return [];
+
+  const headers = lines[0].trim().split(/\s+/);
+  const pidIdx = headers.indexOf('PID');
+  const nameIdx = headers.indexOf('NAME');
+  const commandIdx = headers.indexOf('COMMAND');
+
+  if (pidIdx === -1 || nameIdx === -1) return [];
+
   const found = new Map();
 
-  for (const line of lines) {
-    const parts = line.trim().split(/\s+/);
-    if (parts.length < 9) continue;
+  for (let i = 1; i < lines.length; i++) {
+    const line = lines[i].trim();
+    if (!line) continue;
 
-    const command = parts[0];
-    const pid = parseInt(parts[1]);
-    const nameStr = parts[8];
-    const portMatch = nameStr.match(/:(\d+)$/);
+    const parts = line.split(/\s+/);
+    // Handle potential column shifts due to spaces in COMMAND or USER
+    // by working backwards from the NAME column if needed,
+    // but typically splitting by whitespace is sufficient for lsof -i -n -P
+    const pid = parseInt(parts[pidIdx]);
+    const nameStr = parts[parts.length - 1]; // NAME is usually last
+    const command = parts[commandIdx] || 'unknown';
+
+    // Matches :3000 (IPv4) or [::1]:3000 (IPv6)
+    const portMatch = nameStr.match(/[:](\d+)$/);
     if (!portMatch) continue;
 
     const port = parseInt(portMatch[1]);
     if (port <= 1024 || IGNORED_PORTS.includes(port)) continue;
-    if (found.has(port)) continue;
 
-    found.set(port, { port, pid, command });
+    // Deduplicate: same port might appear for IPv4 and IPv6
+    if (!found.has(port)) {
+      found.set(port, { port, pid, command });
+    }
   }
   return Array.from(found.values());
 }
@@ -54,50 +71,99 @@ function getCwd(pid) {
 
 function enrichMetadata(service) {
   const cwd = getCwd(service.pid);
-  let meta = {
-    name: service.command.charAt(0).toUpperCase() + service.command.slice(1),
-    description: `Process ${service.command} running on port ${service.port}`,
-    stack: 'unknown',
-    color: '#666'
-  };
+  let name = service.command.charAt(0).toUpperCase() + service.command.slice(1);
+  let description = `Process ${service.command} running on port ${service.port}`;
+  let stack = 'unknown';
+  let color = '#666';
 
-  if (!cwd) return { ...service, ...meta };
+  const titleCase = (s) => s.replace(/[-_]/g, ' ').replace(/\b\w/g, c => c.toUpperCase());
 
-  const dirName = path.basename(cwd).replace(/[-_]/g, ' ').replace(/\b\w/g, c => c.toUpperCase());
-  meta.name = dirName;
+  if (cwd) {
+    // 1. Base name from directory
+    name = titleCase(path.basename(cwd));
 
-  // 1. Check Files
-  const files = fs.readdirSync(cwd);
-
-  if (files.includes('package.json')) {
+    // 2. Extract from argv (ps -p <pid> -o args=)
     try {
-      const pkg = JSON.parse(fs.readFileSync(path.join(cwd, 'package.json'), 'utf8'));
-      if (pkg.name) meta.name = pkg.name.replace(/[-_]/g, ' ').replace(/\b\w/g, c => c.toUpperCase());
-      if (pkg.description) meta.description = pkg.description;
-      const deps = { ...pkg.dependencies, ...pkg.devDependencies };
-      if (deps.next) { meta.stack = 'next'; meta.color = '#fff'; }
-      else if (deps.vite) { meta.stack = 'vite'; meta.color = '#ffdc40'; }
-      else if (deps.react) { meta.stack = 'react'; meta.color = '#61dafb'; }
-      else if (deps.express) { meta.stack = 'express'; meta.color = '#828282'; }
+      const argv = execSync(`ps -p ${service.pid} -o args=`, { stdio: ['pipe', 'pipe', 'ignore'] }).toString().trim();
+      const parts = argv.split(/\s+/);
+      const cmd = parts.find(p => ['vite', 'next', 'manage.py', 'flask', 'uvicorn', 'nodemon'].some(s => p.includes(s)));
+      if (cmd) name = titleCase(path.basename(cmd));
     } catch (e) {}
+
+    // 3. Git remote URL
+    try {
+      const gitConfigPath = path.join(cwd, '.git', 'config');
+      if (fs.existsSync(gitConfigPath)) {
+        const config = fs.readFileSync(gitConfigPath, 'utf8');
+        const remoteMatch = config.match(/url\s*=\s*.*\/([^/\n]+?)(\.git)?\s*$/m);
+        if (remoteMatch) name = titleCase(remoteMatch[1]);
+      }
+    } catch (e) {}
+
+    const files = fs.readdirSync(cwd);
+
+    // 4. Tech manifests (pyproject.toml, Cargo.toml, go.mod)
+    if (files.includes('pyproject.toml')) {
+      try {
+        const content = fs.readFileSync(path.join(cwd, 'pyproject.toml'), 'utf8');
+        const nameMatch = content.match(/^name\s*=\s*["'](.+?)["']/m);
+        if (nameMatch) name = titleCase(nameMatch[1]);
+        stack = 'fastapi'; color = '#05998b';
+      } catch (e) {}
+    }
+    if (files.includes('Cargo.toml')) {
+      try {
+        const content = fs.readFileSync(path.join(cwd, 'Cargo.toml'), 'utf8');
+        const nameMatch = content.match(/^name\s*=\s*["'](.+?)["']/m);
+        if (nameMatch) name = titleCase(nameMatch[1]);
+        stack = 'rust'; color = '#f74c00';
+      } catch (e) {}
+    }
+    if (files.includes('go.mod')) {
+      try {
+        const content = fs.readFileSync(path.join(cwd, 'go.mod'), 'utf8');
+        const modMatch = content.match(/^module\s+(.+)$/m);
+        if (modMatch) name = titleCase(path.basename(modMatch[1].trim()));
+        stack = 'go'; color = '#00add8';
+      } catch (e) {}
+    }
+
+    // 5. package.json
+    if (files.includes('package.json')) {
+      try {
+        const pkg = JSON.parse(fs.readFileSync(path.join(cwd, 'package.json'), 'utf8'));
+        if (pkg.name) name = titleCase(pkg.name);
+        if (pkg.description) description = pkg.description;
+        const deps = { ...pkg.dependencies, ...pkg.devDependencies };
+        if (deps.next) { stack = 'next'; color = '#fff'; }
+        else if (deps.vite) { stack = 'vite'; color = '#ffdc40'; }
+        else if (deps.react) { stack = 'react'; color = '#61dafb'; }
+        else if (deps.express) { stack = 'express'; color = '#828282'; }
+      } catch (e) {}
+    }
+
+    // 6. Framework specific flags
+    if (files.includes('manage.py')) { stack = 'django'; color = '#092e20'; }
+    if (files.includes('Gemfile')) { stack = 'ruby'; color = '#701516'; }
+    if (files.includes('requirements.txt')) {
+      const reqs = fs.readFileSync(path.join(cwd, 'requirements.txt'), 'utf8');
+      if (reqs.includes('fastapi')) { stack = 'fastapi'; color = '#05998b'; }
+    }
+
+    // 7. README.md (Highest priority for name and description)
+    if (files.includes('README.md')) {
+      try {
+        const readme = fs.readFileSync(path.join(cwd, 'README.md'), 'utf8');
+        const titleMatch = readme.match(/^#\s+(.+)$/m);
+        if (titleMatch) name = titleMatch[1].trim();
+        const paragraphs = readme.split(/\n\s*\n/);
+        const firstPara = paragraphs.find(p => p.trim() && !p.trim().startsWith('#'));
+        if (firstPara) description = firstPara.trim().replace(/\n/g, ' ');
+      } catch (e) {}
+    }
   }
 
-  if (files.includes('manage.py')) { meta.stack = 'django'; meta.color = '#092e20'; }
-  if (files.includes('Cargo.toml')) { meta.stack = 'rust'; meta.color = '#f74c00'; }
-  if (files.includes('go.mod')) { meta.stack = 'go'; meta.color = '#00add8'; }
-  if (files.includes('Gemfile')) { meta.stack = 'ruby'; meta.color = '#701516'; }
-
-  if (files.includes('README.md')) {
-    try {
-      const readme = fs.readFileSync(path.join(cwd, 'README.md'), 'utf8');
-      const titleMatch = readme.match(/^#\s+(.+)$/m);
-      if (titleMatch) meta.name = titleMatch[1].trim();
-      const paraMatch = readme.split('\n').find(l => l.trim() && !l.startsWith('#'));
-      if (paraMatch) meta.description = paraMatch.trim();
-    } catch (e) {}
-  }
-
-  return { ...service, ...meta };
+  return { ...service, name, description, stack, color };
 }
 
 async function runScan() {
