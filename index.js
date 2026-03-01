@@ -206,42 +206,149 @@ function generateHTML() {
     <title>LocalHarbor - ${hostname}</title>
     <style>
         body { background: #0a0a0f; color: #e0e0e0; font-family: system-ui, -apple-system, sans-serif; margin: 0; padding: 2rem; line-height: 1.5; }
-        header { margin-bottom: 2rem; border-bottom: 1px solid #1f1f2e; padding-bottom: 1rem; }
+        header { margin-bottom: 2rem; border-bottom: 1px solid #1f1f2e; padding-bottom: 1rem; display: flex; justify-content: space-between; align-items: flex-end; }
         h1 { margin: 0; color: #fff; font-size: 1.5rem; }
-        .addr { color: #888; font-family: monospace; font-size: 0.9rem; }
-        #grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); gap: 1rem; }
-        .card { background: #16161a; border: 1px solid #2a2a35; padding: 1.25rem; border-radius: 8px; text-decoration: none; color: inherit; transition: transform 0.15s, border-color 0.15s; display: flex; flex-direction: column; }
-        .card:hover { transform: translateY(-3px); border-color: #444; background: #1c1c21; }
-        .card h3 { margin: 0 0 0.5rem 0; color: #fff; font-size: 1.1rem; }
-        .card p { margin: 0; font-size: 0.85rem; color: #a0a0a0; flex-grow: 1; }
-        .card .url { font-family: monospace; color: #58a6ff; margin-top: 0.75rem; font-size: 0.8rem; }
-        .tag { display: inline-block; padding: 2px 8px; border-radius: 4px; font-size: 0.7rem; font-weight: bold; margin-top: 0.75rem; align-self: flex-start; text-transform: uppercase; background: #2a2a35; }
+        .addr { color: #888; font-family: monospace; font-size: 0.9rem; margin-top: 0.25rem; }
+        .addr a { color: inherit; text-decoration: none; border-bottom: 1px dashed #444; }
+        .addr a:hover { color: #fff; border-bottom-color: #fff; }
+        .timestamp { font-size: 0.75rem; color: #555; font-family: monospace; }
+
+        #grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(300px, 1fr)); gap: 1.5rem; }
+
+        .card {
+            background: #16161a;
+            border: 1px solid #2a2a35;
+            padding: 1.5rem;
+            border-radius: 12px;
+            text-decoration: none;
+            color: inherit;
+            transition: all 0.2s ease;
+            display: flex;
+            flex-direction: column;
+            position: relative;
+            overflow: hidden;
+        }
+        .card:hover {
+            transform: translateY(-4px);
+            border-color: var(--accent);
+            box-shadow: 0 8px 30px -10px var(--accent);
+            background: #1c1c21;
+        }
+        .card .icon {
+            width: 48px;
+            height: 48px;
+            background: var(--accent-bg);
+            color: var(--accent);
+            border-radius: 8px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-weight: bold;
+            font-size: 1.5rem;
+            margin-bottom: 1.25rem;
+        }
+        .card h3 { margin: 0 0 0.5rem 0; color: #fff; font-size: 1.2rem; }
+        .card p { margin: 0; font-size: 0.9rem; color: #a0a0a0; flex-grow: 1; min-height: 3em; }
+        .card .port {
+            position: absolute;
+            bottom: 1.5rem;
+            right: 1.5rem;
+            font-family: monospace;
+            font-size: 0.75rem;
+            color: #555;
+        }
+        .tag {
+            display: inline-block;
+            padding: 2px 10px;
+            border-radius: 20px;
+            font-size: 0.7rem;
+            font-weight: bold;
+            margin-top: 1.25rem;
+            align-self: flex-start;
+            text-transform: uppercase;
+            background: #2a2a35;
+            border: 1px solid #3a3a45;
+        }
+
+        .empty {
+            grid-column: 1 / -1;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            padding: 5rem 0;
+            color: #555;
+        }
+        .dot {
+            width: 12px;
+            height: 12px;
+            background: #333;
+            border-radius: 50%;
+            margin-bottom: 1rem;
+            animation: pulse 1.5s infinite ease-in-out;
+        }
+        @keyframes pulse {
+            0% { transform: scale(0.8); opacity: 0.5; }
+            50% { transform: scale(1.2); opacity: 1; background: #555; }
+            100% { transform: scale(0.8); opacity: 0.5; }
+        }
+        .hidden { display: none !important; }
     </style>
 </head>
 <body>
     <header>
-        <h1>LocalHarbor</h1>
-        <div class="addr">${hostname} • ${localIP}:${PORT}</div>
+        <div>
+            <h1>LocalHarbor</h1>
+            <div class="addr">
+                ${hostname} • <a href="http://${localIP}:${PORT}" target="_blank">http://${localIP}:${PORT}</a>
+            </div>
+        </div>
+        <span id="timestamp" class="timestamp"></span>
     </header>
+
     <div id="grid"></div>
+
+    <div id="empty-state" class="empty hidden">
+        <div class="dot"></div>
+        <p>No services detected yet... scanning</p>
+    </div>
+
     <script>
+        let lastJson = '';
         async function fetchServices() {
             try {
                 const res = await fetch('/api/services');
                 const services = await res.json();
+                const json = JSON.stringify(services);
+
+                document.getElementById('timestamp').textContent = 'Last scanned: ' + new Date().toLocaleTimeString();
+
+                if (lastJson === json) return;
+                lastJson = json;
+
                 const grid = document.getElementById('grid');
+                const empty = document.getElementById('empty-state');
+
                 if (services.length === 0) {
-                    grid.innerHTML = '<p style="color: #666">Scanning for local web services...</p>';
+                    grid.innerHTML = '';
+                    grid.classList.add('hidden');
+                    empty.classList.remove('hidden');
                     return;
                 }
+
+                grid.classList.remove('hidden');
+                empty.classList.add('hidden');
+
                 grid.innerHTML = services.map(s => {
                     const url = \`http://\${location.hostname}:\${s.port}\`;
+                    const firstLetter = (s.name || 'P')[0].toUpperCase();
                     return \`
-                        <a href="\${url}" target="_blank" class="card">
+                        <a href="\${url}" target="_blank" class="card" style="--accent: \${s.color}; --accent-bg: \${s.color}33;">
+                            <div class="icon">\${firstLetter}</div>
                             <h3>\${s.name}</h3>
-                            <p>\${s.description || 'No description found'}</p>
-                            <span class="url">\${url}</span>
+                            <p>\${s.description || 'Active web service detected on port ' + s.port}</p>
                             <span class="tag" style="color: \${s.color}">\${s.stack}</span>
+                            <span class="port">:\${s.port}</span>
                         </a>
                     \`;
                 }).join('');
