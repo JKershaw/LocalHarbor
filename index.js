@@ -168,11 +168,13 @@ function enrichMetadata(service) {
 
 async function runScan() {
   try {
-    const stdout = execSync('lsof -i -n -P -sTCP:LISTEN').toString();
+    const stdout = execSync('lsof -i -n -P -sTCP:LISTEN', { stdio: ['pipe', 'pipe', 'ignore'] }).toString();
     const rawServices = parseLsof(stdout);
     services = rawServices.map(enrichMetadata);
     lastScan = new Date().toLocaleTimeString();
-  } catch (e) { services = []; }
+  } catch (e) {
+    services = [];
+  }
 }
 
 setInterval(runScan, 5000);
