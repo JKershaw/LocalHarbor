@@ -1,2 +1,5 @@
 # LocalHarbor
-Easily find your localhost apps
+
+Where you ship and dock apps.
+
+Easily find your localhost apps and PWAs.
